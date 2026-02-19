@@ -1,0 +1,114 @@
+name: Build Busybox
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * 0" # Weekly
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    name: Check for new version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      should_build: ${{ steps.check.outputs.should_build }}
+    steps:
+      - name: Get latest version
+        id: version
+        run: |
+          TAG="$(git ls-remote --tags --refs "https://git.busybox.net/busybox" | awk -F/ '{print $NF}' | grep -E '^[0-9]+_[0-9]+_[0-9]+$' | sort -V | tail -1)"
+          VERSION="$(echo "$TAG" | tr '_' '.')"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check if release exists
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if gh release view "$VERSION" --repo "${{ github.repository }}" &>/dev/null; then
+            echo "Release $VERSION already exists, skipping build"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New version $VERSION found, building"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build (${{ matrix.arch }})
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - name: Build
+        run: |
+          mkdir -p output
+          docker run --rm \
+            -v "$PWD/output:/output" \
+            "ghcr.io/pkgforge/devscripts/alpine-builder:${{ matrix.arch }}" \
+            bash -c '
+              set -e
+              cd "$(mktemp -d)"
+              git clone --filter="blob:none" --quiet "https://git.busybox.net/busybox" && cd busybox
+              git checkout "${{ needs.check.outputs.tag }}"
+              export CFLAGS="-Os -flto=auto -B/usr/libexec/mold -g0 -pipe -static -w -Wno-error"
+              export CPPFLAGS="${CFLAGS}" CXXFLAGS="${CFLAGS}"
+              export LD="$(which mold)"
+              export LDFLAGS="-static -Wl,--Bstatic,--build-id=none,--no-dynamic-linker,--no-fatal-warnings,--static,--strip-all,-z,noexecstack"
+              make defconfig
+              sed -e "s/.*\<CONFIG_STATIC\>.*/CONFIG_STATIC=y/" -i .config
+              bash make_single_applets.sh || true
+              find . -type f -executable -name "busybox_[A-Z]*" | while read -r f; do
+                name="$(basename "$f" | sed "s/^busybox_//;s/^bb_//" | tr "[:upper:]_" "[:lower:]-")"
+                strip --strip-all "$f" 2>/dev/null
+                cp -f "$f" "/output/$name"
+              done
+              cp -f /output/test1 "/output/["
+              cp -f /output/test2 "/output/[["
+              cp -f COPYING "/output/LICENSE"
+            '
+
+      - uses: actions/checkout@v6
+
+      - name: Package
+        run: |
+          cp -f LICENSE output/LICENSE
+          tar -cJf "busybox-${{ matrix.arch }}-linux.tar.xz" -C output .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: busybox-${{ matrix.arch }}-linux
+          path: "busybox-${{ matrix.arch }}-linux.tar.xz"
+
+  release:
+    name: Release
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "${{ needs.check.outputs.version }}"
+          name: "Busybox ${{ needs.check.outputs.version }}"
+          body: |
+            Busybox ${{ needs.check.outputs.version }} standalone static binaries.
+
+            All applets built individually with static musl linking on Alpine.
+          files: artifacts/*
+          make_latest: true
