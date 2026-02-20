@@ -60,12 +60,16 @@ jobs:
               cd "$(mktemp -d)"
               git clone --filter="blob:none" --quiet "https://git.busybox.net/busybox" && cd busybox
               git checkout "${{ needs.check.outputs.tag }}"
+              if [ "$(uname -m)" != "x86_64" ]; then
+                sed -i "/ENABLE_SHA1_HWACCEL/,/#endif/ { /sha1_process_block64_shaNI/ s/^.*$/\t\t#if defined(__GNUC__) \\&\\& (defined(__i386__) || defined(__x86_64__))\n\t\t|| ctx->process_block == sha1_process_block64_shaNI\n\t\t#endif/; }" libbb/hash_md5_sha.c
+              fi
               export CFLAGS="-Os -flto=auto -B/usr/libexec/mold -g0 -pipe -static -w -Wno-error"
               export CPPFLAGS="${CFLAGS}" CXXFLAGS="${CFLAGS}"
               export LD="$(which mold)"
               export LDFLAGS="-static -Wl,--Bstatic,--build-id=none,--no-dynamic-linker,--no-fatal-warnings,--static,--strip-all,-z,noexecstack"
               make defconfig
-              sed -e "s/.*\<CONFIG_STATIC\>.*/CONFIG_STATIC=y/" -i .config
+              sed -e "s/.*\<CONFIG_STATIC\>.*/CONFIG_STATIC=y/" \
+                  -e "s/.*\<CONFIG_TC\>.*/# CONFIG_TC is not set/" -i .config
               bash make_single_applets.sh || true
               find . -type f -executable -name "busybox_[A-Z]*" | while read -r f; do
                 name="$(basename "$f" | sed "s/^busybox_//;s/^bb_//" | tr "[:upper:]_" "[:lower:]-")"
@@ -74,7 +78,7 @@ jobs:
               done
               cp -f /output/test1 "/output/["
               cp -f /output/test2 "/output/[["
-              cp -f COPYING "/output/LICENSE"
+              cp -f LICENSE "/output/LICENSE"
             '
 
       - uses: actions/checkout@v6
