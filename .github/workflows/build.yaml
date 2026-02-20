@@ -49,6 +49,8 @@ jobs:
       matrix:
         arch: [x86_64, aarch64]
     steps:
+      - uses: actions/checkout@v6
+
       - name: Build
         run: |
           mkdir -p output
@@ -80,8 +82,6 @@ jobs:
               cp -f /output/test2 "/output/[["
               cp -f LICENSE "/output/LICENSE"
             '
-
-      - uses: actions/checkout@v6
 
       - name: Package
         run: |
