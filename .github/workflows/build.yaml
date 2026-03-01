@@ -89,7 +89,7 @@ jobs:
           tar -cJf "busybox-${{ matrix.arch }}-linux.tar.xz" -C output .
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: busybox-${{ matrix.arch }}-linux
           path: "busybox-${{ matrix.arch }}-linux.tar.xz"
